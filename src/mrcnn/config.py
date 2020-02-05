@@ -20,7 +20,7 @@ class Config(object):
     that need to be changed.
     """
     # Name the configurations. For example, 'COCO', 'Experiment 3', ...etc.
-    # Useful if your code needs to do things differently depending on which
+    # Useful if yourcode needs to do things differently depending on which
     # experiment is running.
     NAME = None  # Override in sub-classes
 
@@ -194,8 +194,8 @@ class Config(object):
         "mrcnn_class_loss": 1.,
         "mrcnn_bbox_loss": 1.,
         "mrcnn_mask_loss": 1.,
-        "mrcnn_kp_loss": 5,
-        "mrcnn_yaw_loss": 50.
+        "mrcnn_kp_loss": 1.,
+        "mrcnn_pose_loss": 0.1
     }
 
     # Use RPN ROIs or externally generated ROIs for training

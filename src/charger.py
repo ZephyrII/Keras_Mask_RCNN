@@ -28,15 +28,17 @@ Usage: import the module (see Jupyter notebooks for examples), or run from
 """
 
 import os
-import sys
-import json
-import datetime
+import math
 import numpy as np
 import skimage.draw
 import cv2
 import xml.etree.ElementTree as ET
 import tensorflow as tf
 import keras
+from scipy.spatial.transform import Rotation as R
+
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # see issue #152
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 # Root directory of the project
 ROOT_DIR = os.path.abspath("../../")
@@ -61,10 +63,11 @@ class chargerConfig(Config):
     NAME = "charger"
     IMAGES_PER_GPU = 1
     NUM_CLASSES = 1 + 1  # Background + charger
-    STEPS_PER_EPOCH = 270
+    STEPS_PER_EPOCH = 600
     DETECTION_MIN_CONFIDENCE = 0.9
-    LEARNING_RATE = 0.001
-    NUM_POINTS = 6
+    LEARNING_RATE = 0.0005
+    NUM_POINTS = 4
+
 
 
 ############################################################
@@ -89,6 +92,8 @@ class ChargerDataset(utils.Dataset):
 
         # Add images
         for a in annotations:
+            if not a.startswith("1_15"):
+                continue
             image_path = os.path.join(dataset_dir, 'images', a[:-4]+'.png')
             image = skimage.io.imread(image_path)
             height, width = image.shape[:2]
@@ -128,8 +133,6 @@ class ChargerDataset(utils.Dataset):
         size = root.find('size')
         w = int(size.find('width').text)
         h = int(size.find('height').text)
-        # offset_x = int(root.find('offset_x').text)
-        # offset_y = int(root.find('offset_y').text)
         for object in root.findall('object'):
             kps = object.find('keypoints')
             bbox = object.find('bndbox')
@@ -142,27 +145,30 @@ class ChargerDataset(utils.Dataset):
 
             for i in range(num_points):
                 kp = kps.find('keypoint' + str(i))
-                # print("float(kp.find('x').text)", float(kp.find('x').text))
-                # print("w", w)
-                # print("bw", bw)
-                # print("bh", bh)
-                # print("", )
-                keypoints.append(((float(kp.find('x').text) - xmin) * w / bw,
-                                  (float(kp.find('y').text) - ymin) * h / bh))
-                # keypoints.append((float(kp.find('x').text)/w, float(kp.find('y').text)/h))
-            # print("keypoints", keypoints)
+                keypoints.append([[(float(kp.find('x').text) - xmin) * w / bw,
+                                   (float(kp.find('y').text) - ymin) * h / bh],
+                                  [(float(kp.find('x').text) * w),
+                                   (float(kp.find('y').text) * h)]])
         return keypoints
 
-    def load_yaw(self, image_id):
-
+    def load_im_meta(self, image_id):
         info = self.image_info[image_id]
         ann_fname = info['annotation']
         tree = ET.parse(ann_fname)
         root = tree.getroot()
-        theta = 0
-        for obj in root.findall('object'):
-            theta = float(obj.find('theta').text)
-        return (theta + 1) / 2
+        off_x = int(root.find('offset_x').text)
+        off_y = int(root.find('offset_y').text)
+        object = root.find('object')
+        cm = object.find('camera_matrix')
+        fx = float(cm.find('fx').text)
+        fy = float(cm.find('fy').text)
+        cx = float(cm.find('cx').text)
+        cy = float(cm.find('cy').text)
+        return [fx / 6000, fy / 6000, cx / 6000, cy / 6000, off_x / 6000, off_y / 6000]
+
+    def load_3d_points(self):
+        return np.array(
+            [(-0.32, 0.255, 0.65), (-0.075, 0.0, 0.65), (0.075, 0.0, 0.65), (0.32, 0.255, 0.65)]).astype(np.float32)
 
     def image_reference(self, image_id):
         """Return the path of the image."""
@@ -202,7 +208,7 @@ def freeze_session(session, keep_var_names=None, output_names=None, clear_device
         return frozen_graph
 
 
-def train(model):
+def train(model, epochs):
     """Train the model."""
     # Training dataset.
     dataset_train = ChargerDataset()
@@ -219,11 +225,10 @@ def train(model):
     # COCO trained weights, we don't need to train too long. Also,
     # no need to train all layers, just the heads should do it.
 
-    print("Training network heads")
     model.train(dataset_train, dataset_val,
                 learning_rate=config.LEARNING_RATE,
-                epochs=100,
-                layers='heads')
+                epochs=epochs,
+                layers='5+')
 
 
 def color_splash(image, mask):
@@ -235,7 +240,7 @@ def color_splash(image, mask):
     """
     # Make a grayscale copy of the image. The grayscale copy still
     # has 3 RGB channels, though.
-    gray = np.zeros_like(image) #skimage.color.gray2rgb(skimage.color.rgb2gray(image)) * 255
+    gray = np.ones_like(image) * 255  # skimage.color.gray2rgb(skimage.color.rgb2gray(image)) * 255
     # Copy color pixels from the original color image where mask is set
     if mask.shape[-1] > 0:
         # We're treating all instances as one, so collapse the mask into one layer
@@ -246,95 +251,108 @@ def color_splash(image, mask):
     return splash
 
 
-def detect_and_color_splash(model, image_path=None, video_path=None):
-    assert image_path or video_path
+def detect(model, image_path=None):
+    dataset_val = ChargerDataset()
+    dataset_val.load_charger(image_path, "train")
+    dataset_val.prepare()
     save = False
     if save:
         frozen_graph = freeze_session(keras.backend.get_session(),
                                       output_names=[out.op.name for out in model.keras_model.outputs])
         tf.train.write_graph(frozen_graph, "/root/share/tf/Keras", "frozen_inference_graph.pb", as_text=True)
 
-    # Image or video?
-    if image_path:
-        images = os.listdir(os.path.join(image_path, "images_bright"))
-        for im in images:
-            # Run model detection and generate the color splash effect
-            tree = ET.parse(os.path.join("/root/share/tf/dataset/Inea/6-point/val/", 'annotations', im[:-4] + ".txt"))
+    # images = os.listdir(os.path.join(image_path, "images_bright"))
+    errors = np.array([0.0, 0.0, 0.0, 0.0])
+    cnt = 0
+    for id in dataset_val.image_ids:
+        im = dataset_val.image_info[id]["id"]
+        # Run model detection and generate the color splash effect
+        print(im)
+        try:
+            tree = ET.parse(os.path.join("/root/share/tf/dataset/Inea/6-point/", 'annotations', im))
             root = tree.getroot()
-            theta = 0
-            for obj in root.findall('object'):
-                theta = float(obj.find('theta').text)
-            gt = theta * 180 / 3.14159
-            print("GT yaw", gt)
-            # image = skimage.io.imread(os.path.join(image_path, "images_bright", im))
-            image = cv2.imread(os.path.join(image_path, "images_bright", im))
-            r = model.detect([image], verbose=0)[0]
-            splash = color_splash(image, r['masks'])
-            kps = r['kp'][0][0]
-            # print(kps)
-            if len(r['rois'])==0:
-                continue
-            roi = r['rois'][0]
-            print("yooooooł", (r['yaw'][0][0] * 2 - 1) * 180 / 3.14159)
-            bw = roi[3]-roi[1]
-            bh = roi[2]-roi[0]
-            for i in range(config.NUM_POINTS):
-                # cv2.circle (splash, (int(kps[i*2]*960), int(kps[i*2+1]*720)), 5, (0,0,255), -1)
-                cv2.circle(splash, (int(kps[i * 2] * bw) + roi[1], int(kps[i * 2 + 1] * bh + roi[0])), 5, (0, 0, 255),
-                           -1)
-            cv2.imshow('lol', cv2.resize(splash, (1280, 960)))
-            # attention = r['attention']
-            # attention = (attention+abs(np.min(attention)))/(abs(np.min(attention))+abs(np.max(attention)))
-            # attention = np.squeeze(attention.astype(np.uint8))
-            # print(np.max(attention))
-            # print(np.min(attention))
-            # print(attention.shape)
-            # attention = np.transpose(np.squeeze(attention), [2, 0, 1])
-            # for i in range(5):
-            #     cv2.imshow('att', attention[i])
-            #     k = cv2.waitKey(0)
+            obj = root.find('object')
+            pose = obj.findall('pose')[1]
+            pos = pose.find('position')
+            gt_tvec = [float(pos.find('x').text), float(pos.find('y').text), float(pos.find('z').text)]
+            ori = pose.find('orientation')
+            gt_quat = [float(ori.find('x').text), float(ori.find('y').text), float(ori.find('z').text),
+                       float(ori.find('w').text)]
+            gt_rot = R.from_quat(gt_quat)
+            print("gt_rot", gt_rot.as_euler('xyz', degrees=True))
+            print("gt_tvec", gt_tvec)
+        except:
+            pass
+        image = dataset_val.load_image(id)  # cv2.imread(os.path.join(image_path, "images", im[:-4]+".png"))
+        image = cv2.cvtColor(np.array(image, dtype=np.float32), cv2.COLOR_BGR2RGB)
 
-            k = cv2.waitKey(0)
-            if k==ord('q'):
-                exit(0)
-            # Save output
-            # file_name = "splash_{:%Y%m%dT%H%M%S}.png".format(datetime.datetime.now())
-            # skimage.io.imsave(file_name, splash)
-    elif video_path:
-        # Video capture
-        vcapture = cv2.VideoCapture(video_path)
-        width = int(vcapture.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(vcapture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = vcapture.get(cv2.CAP_PROP_FPS)
+        pose_im_meta = dataset_val.load_im_meta(id)
+        r = model.detect([image], pose_im_meta, verbose=0)[0]
+        splash = color_splash(image, r['masks'])
+        # kps = r['kp'][0][0]
+        pred_pose = r['pose'][0, 0]
+        if len(r['rois']) == 0:
+            print("no detections")
+            continue
 
-        # Define codec and create video writer
-        file_name = "splash_{:%Y%m%dT%H%M%S}.avi".format(datetime.datetime.now())
-        # vwriter = cv2.VideoWriter(file_name,
-        #                           cv2.VideoWriter_fourcc(*'MJPG'),
-        #                           fps, (width, height))
+        pred_tvec = pred_pose[:3] * 100
+        pred_tvec[:2] = pred_tvec[:2] - 50
+        print("pred_tvec", pred_tvec)
+        pred_rvec = pred_pose[3:] * 4
+        # pred_rvec = np.array([0,0,0], dtype=np.float32)
+        pred_rot = R.from_rotvec(pred_rvec)
+        print("pred_rot", pred_rot.as_euler('xyz', degrees=True))
+        errors += np.append(abs(gt_tvec - pred_tvec), abs(
+            pred_rot.as_euler('xyz', degrees=True)[2] - gt_rot.as_euler('xyz', degrees=True)[
+                2]))  # TODO: clean this up !
+        # print(errors)
+        cnt += 1
+        print("errors:", errors / cnt)
+        # print("pose_im_meta", pose_im_meta)
 
-        count = 0
-        success = True
-        while success:
-            print("frame: ", count)
-            # Read next image
-            success, image = vcapture.read()
-            if success:
-                # OpenCV returns images as BGR, convert to RGB
-                image = image[..., ::-1]
-                # Detect objects
-                r = model.detect([image], verbose=0)[0]
-                # print(r)
-                # Color splash
-                splash = color_splash(image, r['masks'])
-                # RGB -> BGR to save image to video
-                splash = splash[..., ::-1]
-                cv2.imshow('lol', cv2.resize(splash, (1280, 960)))
-                cv2.waitKey(0)
-                # Add image to video writer
-                # vwriter.write(splash)
-                count += 1
+        camera_matrix = np.array([[4996.73451, 0, 2732.95188],
+                                  [0, 4992.93867, 1890.88113],
+                                  [0, 0, 1]])
+        # camera_matrix = np.array([[1929.14559, 0, 1924.38974],
+        #                           [0, 1924.07499, 1100.54838],
+        #                           [0, 0, 1]])
+        distortion = np.array([-0.11286, 0.11138, 0.00195, -0.00166, 0.00000]).astype(np.float64)
+        object_points = np.array(
+            [(-0.32, 0.255, 0.65), (-0.075, 0.0, 0.65), (0.075, 0.0, 0.65), (0.32, 0.255, 0.65)]).astype(np.float64)
+        # out_points = np.squeeze(
+        #     cv2.projectPoints(object_points, pred_rvec, pred_tvec, camera_matrix, distortion)[0])
 
+        # object_points = pred_rot.apply(object_points)
+        out_points = object_points + pred_tvec
+        print("out_points", out_points)
+        u = camera_matrix[0, 0] * out_points[:, 0] / out_points[:, 2] + camera_matrix[0, 2] - pose_im_meta[4] * 6000
+        v = camera_matrix[1, 1] * out_points[:, 1] / out_points[:, 2] + camera_matrix[1, 2] - pose_im_meta[5] * 6000
+        # print(out_points.shape)
+        for idx, pt in enumerate(zip(u, v)):  # enumerate(out_points):
+            # print(pt)
+            # print(pose_im_meta[4:])
+            # pt = int(pt[0]-pose_im_meta[4]*6000), int(pt[1]-pose_im_meta[5]*6000)
+            pt = int(pt[0]), int(pt[1])
+            print("proj points", pt)
+            try:
+                cv2.circle(splash, (pt), 5, (0, 255, 0), -1)
+            except OverflowError:
+                print("Reprojection failed. Int overflow")
+        print('rois', r['rois'])
+        cv2.rectangle(splash, (r['rois'][0, 1], r['rois'][0, 0]), (r['rois'][0, 3], r['rois'][0, 2]), (222, 222, 222),
+                      5)
+        out_path = os.path.join("/root/share/tf/dataset/sup-res", im[:-4] + ".png")
+        w = r['rois'][0, 2] - r['rois'][0, 0]
+        h = r['rois'][0, 3] - r['rois'][0, 1]
+        sup_res_img = image[r['rois'][0, 0] - int(0.1 * w):r['rois'][0, 2] + int(0.1 * w),
+                      r['rois'][0, 1] - int(0.1 * h):r['rois'][0, 3] + int(0.1 * h)]
+        if sup_res_img.shape[0] * sup_res_img.shape[1] > 100 * 100:
+            cv2.imwrite(out_path, sup_res_img)
+        cv2.imshow('lol', cv2.resize(splash, (1280, 960)))
+
+        k = cv2.waitKey(1)
+        if k == ord('q'):
+            exit(0)
 
 ############################################################
 #  Training
@@ -371,8 +389,8 @@ if __name__ == '__main__':
     if args.command == "train":
         assert args.dataset, "Argument --dataset is required for training"
     elif args.command == "splash":
-        assert args.image or args.video,\
-               "Provide --image or --video to apply color splash"
+        assert args.image or args.dataset, \
+            "Provide --image or --dataset to apply color splash"
 
     print("Weights: ", args.weights)
     print("Dataset: ", args.dataset)
@@ -388,7 +406,7 @@ if __name__ == '__main__':
             GPU_COUNT = 1
             IMAGES_PER_GPU = 1
         config = InferenceConfig()
-    config.display()
+        config.display()
 
     # Create model
     if args.command == "train":
@@ -424,13 +442,11 @@ if __name__ == '__main__':
     else:
         model.load_weights(weights_path, by_name=True)
 
-
     # Train or evaluate
     if args.command == "train":
-        train(model)
+        train(model, 200)
     elif args.command == "splash":
-        detect_and_color_splash(model, image_path=args.image,
-                                video_path=args.video)
+        detect(model, image_path=args.dataset)
     else:
         print("'{}' is not recognized. "
               "Use 'train' or 'splash'".format(args.command))
