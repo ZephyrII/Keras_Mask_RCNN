@@ -292,7 +292,7 @@ class PoseEstimator:
         return imagePoints
 
     def calc_PnP_pose(self, imagePoints):
-        print("imagePoints", np.array(imagePoints).astype(np.int16))
+        # print("imagePoints", np.array(imagePoints).astype(np.int16))
         if imagePoints is None and len(imagePoints) > 0:
             return None
         if len(imagePoints) == 6:
@@ -309,8 +309,9 @@ class PoseEstimator:
         elif len(imagePoints) == 4:
             PnP_image_points = imagePoints
             # object_points = np.array([(-0.32, 0, -0.65), (-0.075, -0.255, -0.65), (0.075, -0.255, -0.65), (0.32, 0, -0.65)]).astype(np.float64)
-            object_points = np.array([[-1.38, -0.19, 0.65], [1.38, -0.19, 0.65], [1.38, 1.81, 0.0], [-1.38, 1.81, 0.0]],
-                                     dtype=np.float32) * 0.965
+            object_points = np.array(
+                [(-0.32, 0.255, 0.65), (-0.075, 0.0, 0.65), (0.075, 0.0, 0.65), (0.32, 0.255, 0.65)],
+                dtype=np.float32)
         elif len(imagePoints) == 8:
             # PnP_image_points = imagePoints[:4]
             # object_points = np.array([(-0.32, 0, -0.65), (-0.075, -0.255, -0.65), (0.075, -0.255, -0.65), (0.32, 0, -0.65)]).astype(np.float64)
@@ -327,7 +328,7 @@ class PoseEstimator:
         else:
             init_guess = np.array([0.0, 0.5, 30.0])
         retval, rvec, tvec = cv2.solvePnP(object_points, PnP_image_points, self.camera_matrix,
-                                          distCoeffs=(-0.10112, 0.07739, -0.00447, -0.0070),
+                                          distCoeffs=None,  # (-0.10112, 0.07739, -0.00447, -0.0070),
                                           rvec=np.array([0.0, 0.0, 0.0]))
         # retval, rvec, tvec, inliers = cv2.solvePnPRansac(object_points, PnP_image_points, self.camera_matrix,
         #                                                  iterationsCount=10000, distCoeffs=(-0.10112, 0.07739, 0.00447, -0.00070, 0.00000))

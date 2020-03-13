@@ -153,21 +153,21 @@ class Config(object):
 
     # Pooled ROIs
     POOL_SIZE = 7
-    MASK_POOL_SIZE = 14
+    MASK_POOL_SIZE = 24
 
     # Shape of output mask
     # To change this you also need to change the neural network mask branch
     MASK_SHAPE = [28, 28]
 
     # Maximum number of ground truth instances to use in one image
-    MAX_GT_INSTANCES = 100
+    MAX_GT_INSTANCES = 200
 
     # Bounding box refinement standard deviation for RPN and final detections.
     RPN_BBOX_STD_DEV = np.array([0.1, 0.1, 0.2, 0.2])
     BBOX_STD_DEV = np.array([0.1, 0.1, 0.2, 0.2])
 
     # Max number of final detections
-    DETECTION_MAX_INSTANCES = 100
+    DETECTION_MAX_INSTANCES = 200
 
     # Minimum probability value to accept a detected instance
     # ROIs below this threshold are skipped
@@ -193,7 +193,7 @@ class Config(object):
         "rpn_bbox_loss": 1.,
         "mrcnn_class_loss": 1.,
         "mrcnn_bbox_loss": 1.,
-        "mrcnn_mask_loss": 1.,
+        "mrcnn_mask_loss": 0.,
         "mrcnn_kp_loss": 1.,
         "mrcnn_pose_loss": 0.1
     }

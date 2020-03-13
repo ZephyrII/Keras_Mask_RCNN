@@ -36,9 +36,10 @@ import xml.etree.ElementTree as ET
 import tensorflow as tf
 import keras
 from scipy.spatial.transform import Rotation as R
+from PoseEstimator import PoseEstimator
 
-os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # see issue #152
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
+# os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # see issue #152
+# os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 # Root directory of the project
 ROOT_DIR = os.path.abspath("../../")
@@ -63,12 +64,10 @@ class chargerConfig(Config):
     NAME = "charger"
     IMAGES_PER_GPU = 1
     NUM_CLASSES = 1 + 1  # Background + charger
-    STEPS_PER_EPOCH = 600
+    STEPS_PER_EPOCH = 1200
     DETECTION_MIN_CONFIDENCE = 0.9
-    LEARNING_RATE = 0.0005
+    LEARNING_RATE = 0.00001
     NUM_POINTS = 4
-
-
 
 ############################################################
 #  Dataset
@@ -164,7 +163,8 @@ class ChargerDataset(utils.Dataset):
         fy = float(cm.find('fy').text)
         cx = float(cm.find('cx').text)
         cy = float(cm.find('cy').text)
-        return [fx / 6000, fy / 6000, cx / 6000, cy / 6000, off_x / 6000, off_y / 6000]
+        return np.array([fx / 6000.0, fy / 6000.0, cx / 6000.0, cy / 6000.0, off_x / 6000.0, off_y / 6000.0]).astype(
+            np.float32)
 
     def load_3d_points(self):
         return np.array(
@@ -228,7 +228,7 @@ def train(model, epochs):
     model.train(dataset_train, dataset_val,
                 learning_rate=config.LEARNING_RATE,
                 epochs=epochs,
-                layers='5+')
+                layers='heads')
 
 
 def color_splash(image, mask):
@@ -262,8 +262,12 @@ def detect(model, image_path=None):
         tf.train.write_graph(frozen_graph, "/root/share/tf/Keras", "frozen_inference_graph.pb", as_text=True)
 
     # images = os.listdir(os.path.join(image_path, "images_bright"))
-    errors = np.array([0.0, 0.0, 0.0, 0.0])
+    errors_e2e = np.array([0.0, 0.0, 0.0])
+    errors_pnp = np.array([0.0, 0.0, 0.0, 0.0])
     cnt = 0
+    cnt0 = 0
+    cnt1 = 0
+    cnt2 = 0
     for id in dataset_val.image_ids:
         im = dataset_val.image_info[id]["id"]
         # Run model detection and generate the color splash effect
@@ -274,7 +278,7 @@ def detect(model, image_path=None):
             obj = root.find('object')
             pose = obj.findall('pose')[1]
             pos = pose.find('position')
-            gt_tvec = [float(pos.find('x').text), float(pos.find('y').text), float(pos.find('z').text)]
+            gt_tvec = np.array([float(pos.find('x').text), float(pos.find('y').text), float(pos.find('z').text)])
             ori = pose.find('orientation')
             gt_quat = [float(ori.find('x').text), float(ori.find('y').text), float(ori.find('z').text),
                        float(ori.find('w').text)]
@@ -289,30 +293,48 @@ def detect(model, image_path=None):
         pose_im_meta = dataset_val.load_im_meta(id)
         r = model.detect([image], pose_im_meta, verbose=0)[0]
         splash = color_splash(image, r['masks'])
-        # kps = r['kp'][0][0]
+        kps = r['kp'][0][0]
         pred_pose = r['pose'][0, 0]
         if len(r['rois']) == 0:
             print("no detections")
             continue
 
-        pred_tvec = pred_pose[:3] * 100
-        pred_tvec[:2] = pred_tvec[:2] - 50
-        print("pred_tvec", pred_tvec)
-        pred_rvec = pred_pose[3:] * 4
-        # pred_rvec = np.array([0,0,0], dtype=np.float32)
-        pred_rot = R.from_rotvec(pred_rvec)
-        print("pred_rot", pred_rot.as_euler('xyz', degrees=True))
-        errors += np.append(abs(gt_tvec - pred_tvec), abs(
-            pred_rot.as_euler('xyz', degrees=True)[2] - gt_rot.as_euler('xyz', degrees=True)[
-                2]))  # TODO: clean this up !
-        # print(errors)
-        cnt += 1
-        print("errors:", errors / cnt)
-        # print("pose_im_meta", pose_im_meta)
-
         camera_matrix = np.array([[4996.73451, 0, 2732.95188],
                                   [0, 4992.93867, 1890.88113],
                                   [0, 0, 1]])
+
+        dist = pred_pose[0]  # * 100
+        center_u = (r['rois'][0, 3] - r['rois'][0, 1]) / 2 + r['rois'][0, 1] + pose_im_meta[4] * 6000
+        center_v = r['rois'][0, 0] + pose_im_meta[5] * 6000
+        # print("center_u, center_v", center_u, center_v)
+        x = (center_u - camera_matrix[0, 2]) / camera_matrix[0, 0] * dist
+        y = (center_v - camera_matrix[1, 2]) / camera_matrix[1, 1] * dist
+        pred_tvec = np.array([x, y, dist])
+        print("pred_tvec", pred_tvec)
+        pred_rvec = pred_pose[1:] * 4
+        # pred_rot = R.from_rotvec(pred_rvec)
+        # print("pred_rot", pred_rot.as_euler('xyz', degrees=True))
+
+        # pred_tvec = pred_pose[:3] * 100
+        # pred_tvec[:2] = pred_tvec[:2] - 50
+        # # pred_rvec = np.array([0,0,0], dtype=np.float32)
+
+        if gt_tvec[2] < 20:
+            errors_e2e[0] += abs(gt_tvec[2] - pred_tvec[2])
+            cnt0 += 1
+        if gt_tvec[2] < 40 and gt_tvec[2] > 20:
+            errors_e2e[1] += abs(gt_tvec[2] - pred_tvec[2])
+            cnt1 += 1
+        if gt_tvec[2] > 40:
+            errors_e2e[2] += abs(gt_tvec[2] - pred_tvec[2])
+            cnt2 += 1
+        # errors_e2e += abs(gt_tvec - pred_tvec)#, abs(pred_rot.as_euler('xyz', degrees=True)[2] - gt_rot.as_euler('xyz', degrees=True)[2]))  # TODO: clean this up
+        # errors += np.append(gt_tvec - pred_tvec, pred_rot.as_euler('xyz', degrees=True)[2] - gt_rot.as_euler('xyz', degrees=True)[2])  # TODO: clean this up
+        cnt += 1
+        print("errors_e2e:", errors_e2e[0] / cnt0, errors_e2e[1] / cnt1, errors_e2e[2] / cnt2)
+        # # print("pose_im_meta", pose_im_meta)
+
+
         # camera_matrix = np.array([[1929.14559, 0, 1924.38974],
         #                           [0, 1924.07499, 1100.54838],
         #                           [0, 0, 1]])
@@ -322,9 +344,9 @@ def detect(model, image_path=None):
         # out_points = np.squeeze(
         #     cv2.projectPoints(object_points, pred_rvec, pred_tvec, camera_matrix, distortion)[0])
 
-        # object_points = pred_rot.apply(object_points)
         out_points = object_points + pred_tvec
-        print("out_points", out_points)
+        # object_points = pred_rot.apply(object_points)
+        # print("out_points", out_points)
         u = camera_matrix[0, 0] * out_points[:, 0] / out_points[:, 2] + camera_matrix[0, 2] - pose_im_meta[4] * 6000
         v = camera_matrix[1, 1] * out_points[:, 1] / out_points[:, 2] + camera_matrix[1, 2] - pose_im_meta[5] * 6000
         # print(out_points.shape)
@@ -333,24 +355,40 @@ def detect(model, image_path=None):
             # print(pose_im_meta[4:])
             # pt = int(pt[0]-pose_im_meta[4]*6000), int(pt[1]-pose_im_meta[5]*6000)
             pt = int(pt[0]), int(pt[1])
-            print("proj points", pt)
+            # print("proj points", pt)
             try:
                 cv2.circle(splash, (pt), 5, (0, 255, 0), -1)
             except OverflowError:
                 print("Reprojection failed. Int overflow")
-        print('rois', r['rois'])
+        # print('rois', r['rois'])
         cv2.rectangle(splash, (r['rois'][0, 1], r['rois'][0, 0]), (r['rois'][0, 3], r['rois'][0, 2]), (222, 222, 222),
                       5)
         out_path = os.path.join("/root/share/tf/dataset/sup-res", im[:-4] + ".png")
         w = r['rois'][0, 2] - r['rois'][0, 0]
         h = r['rois'][0, 3] - r['rois'][0, 1]
+
+        pe = PoseEstimator(camera_matrix)
+        kps = np.reshape(kps, (4, 2))
+        out_kp = np.zeros_like(kps)
+        out_kp[:, 1] = kps[:, 0] * h + r['rois'][0, 1] + pose_im_meta[5] * 6000
+        out_kp[:, 0] = kps[:, 1] * w + r['rois'][0, 0] + pose_im_meta[4] * 6000
+        # kps = np.transpose(kps, )
+        # print("kps", kps)
+        pnp_tvec, pnp_rvec = pe.calc_PnP_pose(out_kp)
+        pnp_rvec = R.from_rotvec(pnp_rvec)
+        pnp_tvec = np.squeeze(pnp_tvec)
+        print("pnp_tvec", pnp_tvec)
+        errors_pnp += np.append(abs(gt_tvec - pnp_tvec), abs(
+            pnp_rvec.as_euler('xyz', degrees=True)[2] - gt_rot.as_euler('xyz', degrees=True)[2]))  # TODO: clean this up
+        print("errorsPnP:", errors_pnp / cnt)
+
         sup_res_img = image[r['rois'][0, 0] - int(0.1 * w):r['rois'][0, 2] + int(0.1 * w),
                       r['rois'][0, 1] - int(0.1 * h):r['rois'][0, 3] + int(0.1 * h)]
         if sup_res_img.shape[0] * sup_res_img.shape[1] > 100 * 100:
             cv2.imwrite(out_path, sup_res_img)
-        cv2.imshow('lol', cv2.resize(splash, (1280, 960)))
+        cv2.imshow('lol', splash)  # cv2.resize(splash, (1280, 960)))
 
-        k = cv2.waitKey(1)
+        k = cv2.waitKey(10)
         if k == ord('q'):
             exit(0)
 
@@ -444,7 +482,7 @@ if __name__ == '__main__':
 
     # Train or evaluate
     if args.command == "train":
-        train(model, 200)
+        train(model, 150)
     elif args.command == "splash":
         detect(model, image_path=args.dataset)
     else:
