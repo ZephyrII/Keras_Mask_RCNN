@@ -262,7 +262,10 @@ class Detector:
         self.scale = ((xmax - xmin) / self.slice_size[0], (ymax - ymin) / self.slice_size[1])
         self.bbox = [xmin, ymin, xmax, ymax]
 
-        frame = cv2.resize(frame[ymin:ymax, xmin:xmax], self.slice_size)
+        try:
+            frame = cv2.resize(frame[ymin:ymax, xmin:xmax], self.slice_size)
+        except:
+            return
         # xmin, ymin, xmax, ymax = self.detect_pole(small_frame)
         print("pole detection time:", time.time() - start_time)
 

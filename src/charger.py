@@ -26,9 +26,8 @@ from mrcnn import model as modellib, utils
 COCO_WEIGHTS_PATH = os.path.join(ROOT_DIR, "mask_rcnn_coco.h5")
 DEFAULT_LOGS_DIR = os.path.join(ROOT_DIR, "logs")
 
-
-# os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"   # see issue #152
-# os.environ["CUDA_VISIBLE_DEVICES"] = ""
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # see issue #152
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
 np.set_printoptions(threshold=sys.maxsize)
 ############################################################
 #  Configurations
@@ -66,8 +65,8 @@ class ChargerDataset(utils.Dataset):
         # Train or validation dataset?
         assert subset in ["train", "val"]
         if subset == "val":
-            # pass
-            dataset_dir = os.path.join(dataset_dir, 'val')
+            pass
+            # dataset_dir = os.path.join(dataset_dir, 'val')
         annotations = os.listdir(os.path.join(dataset_dir, 'annotations'))
 
         # Add images
@@ -129,7 +128,7 @@ class ChargerDataset(utils.Dataset):
         size = root.find('size')
         w = int(size.find('width').text)
         h = int(size.find('height').text)
-        kp_maps = np.zeros((num_points, w, h), dtype=np.int32)
+        kp_maps = np.zeros((num_points, w, h), dtype=np.float32)
         for object in root.findall('object'):
             kps = object.find('keypoints')
             for i in range(num_points):  # TODO: remove
@@ -145,17 +144,17 @@ class ChargerDataset(utils.Dataset):
                 # kp_maps[i, int(float(kp.find('y').text)*h), int(float(kp.find('x').text)*w)] = 1.0
                 # kp_maps[i, point_center[0] - point_size:point_center[0] + point_size,
                 # point_center[1] - point_size:point_center[1] + point_size] = 255
-                cv2.circle(kp_maps[i], point_center[::-1], point_size, 255, -1)
+                cv2.circle(kp_maps[i], point_center[::-1], point_size, 1.0, -1)
                 # kp_maps[i, point_center[0], point_center[1]] = 255
                 # kp_maps[i] = cv2.GaussianBlur(kp_maps[i], (5,5), sigmaX=2)
                 # kp_maps[i] = cv2.GaussianBlur(kp_maps[i], (3,3), sigmaX=0)
                 # image = self.load_image(image_id).astype(np.float32)/255
-                # kap = kp_maps[i].astype(np.float32)/255
-                # kap = cv2.cvtColor(kap, cv2.COLOR_GRAY2BGR)
+                # kap = cv2.cvtColor(kp_maps[i], cv2.COLOR_GRAY2BGR)
                 # print("shapes", image.shape, kap.shape)
                 # alpha=0.8
                 # out = cv2.addWeighted(image, alpha, kap, 1-alpha, 0.0)
                 # cv2.imshow('xddlol', out)
+                # cv2.imshow('xddlol', image)
                 # cv2.waitKey(0)
 
         return kp_maps, keypoints
