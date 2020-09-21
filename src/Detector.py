@@ -15,67 +15,6 @@ except ImportError:
     pass
 
 
-#
-# def draw_boxes_and_labels(
-#         boxes,
-#         classes,
-#         scores,
-#         instance_masks=None,
-#         keypoints=None,
-#         max_boxes_to_draw=None,
-#         min_score_thresh=.5,
-#         agnostic_mode=False):
-#     """Returns boxes coordinates, class names and colors
-#
-#     Args:
-#         boxes: a numpy array of shape [N, 4]
-#         classes: a numpy array of shape [N]
-#         scores: a numpy array of shape [N] or None.  If scores=None, then
-#         this function assumes that the boxes to be plotted are groundtruth
-#         boxes and plot all boxes as black with no classes or scores.
-#         category_index: a dict containing category dictionaries (each holding
-#         category index `id` and category name `name`) keyed by category indices.
-#         instance_masks: a numpy array of shape [N, image_height, image_width], can
-#         be None
-#         keypoints: a numpy array of shape [N, num_keypoints, 2], can
-#         be None
-#         max_boxes_to_draw: maximum number of boxes to visualize.  If None, draw
-#         all boxes.
-#         min_score_thresh: minimum score threshold for a box to be visualized
-#         agnostic_mode: boolean (default: False) controlling whether to evaluate in
-#         class-agnostic mode or not.  This mode will display scores but ignore
-#         classes.
-#     """
-#     # Create a display string (and color) for every box location, group any boxes
-#     # that correspond to the same location.
-#     box_to_display_str_map = collections.defaultdict(list)
-#     box_to_color_map = collections.defaultdict(str)
-#     box_to_instance_masks_map = {}
-#     box_to_keypoints_map = collections.defaultdict(list)
-#     if not max_boxes_to_draw:
-#         max_boxes_to_draw = boxes.shape[0]
-#     for i in range(min(max_boxes_to_draw, boxes.shape[0])):
-#         if scores is None or scores[i] > min_score_thresh:
-#             box = tuple(boxes[i].tolist())
-#             if instance_masks is not None:
-#                 box_to_instance_masks_map[box] = instance_masks[i]
-#             if keypoints is not None:
-#                 box_to_keypoints_map[box].extend(keypoints[i])
-#             if scores is None:
-#                 box_to_color_map[box] = 'black'
-#             else:
-#                 display_str = int(100 * scores[i])
-#                 box_to_display_str_map[box].append(display_str)
-#
-#     rect_points = []
-#     class_scores = []
-#     for box, color in six.iteritems(box_to_color_map):
-#         ymin, xmin, ymax, xmax = box
-#         rect_points.append(dict(ymin=ymin, xmin=xmin, ymax=ymax, xmax=xmax))
-#         class_scores.append(box_to_display_str_map[box])
-#     return rect_points, class_scores
-
-
 class ChargerConfig(Config):
     """Configuration for training on the toy  dataset.
     Derives from the base Config class and overrides some values.
@@ -92,7 +31,7 @@ class ChargerConfig(Config):
     # Skip detections with < 90% confidence
     DETECTION_MIN_CONFIDENCE = 0.9
     # LEARNING_RATE = 0.001
-    NUM_POINTS = 4
+    NUM_POINTS = 5
 
 
 class Detector:
@@ -129,10 +68,10 @@ class Detector:
 
             self.pole_sess = tf.compat.v1.Session(graph=self.pole_detection_graph)
 
-        config = ChargerConfig()
-        config.display()
+        self.config = ChargerConfig()
+        self.config.display()
 
-        model = modellib.MaskRCNN(mode="inference", config=config, model_dir=path_to_model)
+        model = modellib.MaskRCNN(mode="inference", config=self.config, model_dir=path_to_model)
 
         weights_path = model.find_last()
         # weights_path = "/root/share/tf/Keras/31_08_heatmap/charger20200901T1045/mask_rcnn_charger_0002.h5"
@@ -143,8 +82,8 @@ class Detector:
         self.det_model = model
 
         if path_to_model_bottom is not None:
-            config.NUM_POINTS = 4
-            model_bottom = modellib.MaskRCNN(mode="inference", config=config,
+            self.config.NUM_POINTS = 4
+            model_bottom = modellib.MaskRCNN(mode="inference", config=self.config,
                                              model_dir=path_to_model_bottom)
 
             weights_path_bottom = model_bottom.find_last()
@@ -159,7 +98,7 @@ class Detector:
 
     def init_size(self, shape):
         self.frame_shape = shape
-        self.moving_avg_image = np.full(shape[:2], 100, dtype=np.uint8)
+        self.moving_avg_image = np.full((self.config.NUM_POINTS, shape[0], shape[1]), 0.5, dtype=np.float64)
 
     def get_CNN_output(self, image_np):  # TODO: scale keypoints
         start_time = time.time()
@@ -167,16 +106,26 @@ class Detector:
             r = self.det_model_bottom.detect([image_np], verbose=0)[0]
         else:
             r = self.det_model.detect([image_np], verbose=0)[0]
-        print("kp detection time:", time.time() - start_time)
+        # print("kp detection time:", time.time() - start_time)
 
         uncertainty = r['uncertainty'][0][0]
         kps = r['kp'][0][0]
         kps = np.transpose(kps, (2, 0, 1))
         absolute_kp = []
+        heatmap_uncertainty = []
 
         for i, kp in enumerate(kps):
             # center = np.unravel_index(kp.argmax(), kp.shape)
+
+            xmin, ymin, xmax, ymax = self.bbox
+            alpha = 0.8
+            # print("dtypes", kp.astype(np.float64).shape, self.moving_avg_image[i, ymin:ymax, xmin:xmax].shape)
+            # kp = cv2.addWeighted(kp.astype(np.float64), alpha,
+            #                      cv2.resize(self.moving_avg_image[i, ymin:ymax, xmin:xmax], self.slice_size), 1-alpha, 0.0)
+            raw_kp = kp
             kp = kp / np.max(kp)
+            # cv2.imshow("kp", kp)
+            # cv2.waitKey(0)
             h, w = kp.shape
             # ret, kp = cv2.threshold(kp, 0.85, 1.0, cv2.THRESH_BINARY)
             ret, kp = cv2.threshold(kp, 0.2, 1.0, cv2.THRESH_BINARY)
@@ -185,24 +134,19 @@ class Detector:
                 absolute_kp.append((0, 0))
                 heatmap_uncertainty = np.array([[np.inf, np.inf], [np.inf, np.inf]])
                 continue
-            print("X.shape", X.shape)
             clustering = DBSCAN(eps=3, min_samples=2)
             clustering.fit(X)
             cluster_scores = []
             unique_labels = np.unique(clustering.labels_)
-            print("unique clusters", unique_labels)
-            for i in np.unique(clustering.labels_):
-                cluster = X[np.where(clustering.labels_ == i)]
+            for id in np.unique(clustering.labels_):
+                cluster = X[np.where(clustering.labels_ == id)]
                 cluster_scores.append(np.sum(kp[cluster[:, 0], cluster[:, 1]]))
-            print("cluster_scores", cluster_scores)
-            print("np.argmax(cluster_scores)", np.argmax(cluster_scores))
-            print("np.unique(clustering.labels_)[np.argmax(cluster_scores)]", unique_labels[np.argmax(cluster_scores)])
             cluster = X[np.where(clustering.labels_ == unique_labels[np.argmax(cluster_scores)])]
-            # print("cluster", cluster)
-            # print("components_", clustering.components_)
             mask = np.zeros_like(kp)
-            mask[cluster[:, 0], cluster[:, 1]] = 1.0
-            heatmap_uncertainty = np.cov(cluster.T)
+            mask[cluster[:, 0], cluster[:, 1]] = raw_kp[cluster[:, 0], cluster[:, 1]]
+
+            # self.update_moving_avg(i, mask)
+            heatmap_uncertainty.append(np.cov(cluster.T))
             if np.sum(mask) == 0:
                 center = (0, 0)
             else:
@@ -212,16 +156,19 @@ class Detector:
                 ((center[1] * self.scale[0] + self.bbox[0]),  # * self.frame_shape[1] / self.slice_size[1],
                  (center[0] * self.scale[1] + self.bbox[1])))  # * self.frame_shape[0] / self.slice_size[0]))
 
-            # alpha=0.9
-            # kp = cv2.cvtColor(kp, cv2.COLOR_GRAY2BGR)
-            # cv2.circle(kp, (center[1], center[0]), 10, (255,0,255), 1)
-            # out = cv2.addWeighted(kp, alpha, image_np, 1.0-alpha, 1.0, dtype=1)
-            cv2.imshow('yolo out', cv2.resize(image_np, (960, 960)))
-            cv2.imshow('kp', cv2.resize(kp, (960, 960)))
-            print("center", center)
-            # cv2.waitKey(0)
+
         self.best_detection = dict(keypoints=absolute_kp, uncertainty=uncertainty,
-                                   heatmap_uncertainty=heatmap_uncertainty)
+                                   heatmap_uncertainty=np.array(heatmap_uncertainty))
+
+    def update_moving_avg(self, i, mask):
+        xmin, ymin, xmax, ymax = self.bbox
+        overlay = np.zeros(self.frame_shape, dtype=np.float64)
+        mk = cv2.resize(mask, (xmax - xmin, ymax - ymin))
+        ret, mk = cv2.threshold(mk, 0.5, 1.0, cv2.THRESH_BINARY)
+        mk = cv2.dilate(mk, np.ones((10, 10), np.uint8), iterations=10)
+        mk = cv2.blur(mk, (20, 20))
+        overlay[ymin:ymax, xmin:xmax] = cv2.resize(mk, (xmax - xmin, ymax - ymin))
+        cv2.accumulateWeighted(overlay, self.moving_avg_image[i], 0.5)
 
     def detect(self, frame, gt_pose, gt_kp):
         self.gt_kp = gt_kp
@@ -264,10 +211,13 @@ class Detector:
 
         try:
             frame = cv2.resize(frame[ymin:ymax, xmin:xmax], self.slice_size)
-        except:
+            cv2.imshow("yolo", frame)
+        except cv2.error as e:
+            print(e.msg)
             return
+
         # xmin, ymin, xmax, ymax = self.detect_pole(small_frame)
-        print("pole detection time:", time.time() - start_time)
+        # print("pole detection time:", time.time() - start_time)
 
         self.get_CNN_output(frame)
 

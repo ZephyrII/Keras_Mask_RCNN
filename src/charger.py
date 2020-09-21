@@ -39,10 +39,10 @@ class chargerConfig(Config):
     NAME = "charger"
     IMAGES_PER_GPU = 1
     NUM_CLASSES = 1 + 1  # Background + charger
-    STEPS_PER_EPOCH = 10000
+    STEPS_PER_EPOCH = 1000
     DETECTION_MIN_CONFIDENCE = 0.9
-    LEARNING_RATE = 0.0001
-    NUM_POINTS = 4
+    LEARNING_RATE = 0.0005
+    NUM_POINTS = 5
 
 ############################################################
 #  Dataset
